@@ -260,7 +260,13 @@ def build_graph(files, root_path):
         target_rel_dotted = target_rel.replace('/', '.')
         target_path_no_ext_dotted = target_path_no_ext.replace('/', '.')
 
+        # Also include @ alias versions (assuming @ points to src)
+        target_rel_at = target_rel.replace('src/', '@/', 1) if target_rel.startswith('src/') else None
+        target_path_no_ext_at = target_path_no_ext.replace('src/', '@/', 1) if target_path_no_ext.startswith('src/') else None
+
         search_terms = [target_name, target_rel, target_path_no_ext, target_rel_dotted, target_path_no_ext_dotted]
+        if target_rel_at:
+            search_terms.extend([target_rel_at, target_path_no_ext_at])
 
         for source_path in files:
             if source_path != target_path:
@@ -283,6 +289,22 @@ def resolve_dependency(dep, current_file, file_map):
     if dep.startswith('./') or dep.startswith('../'):
         # Relative import
         full_path = os.path.normpath(os.path.join(current_dir, dep))
+
+        # Try different extensions if no extension provided
+        if '.' not in os.path.basename(full_path):
+            for ext in ['.js', '.ts', '.jsx', '.tsx', '.py', '.html', '.css']:
+                test_path = full_path + ext
+                if test_path in file_map:
+                    return test_path
+        else:
+            if full_path in file_map:
+                return full_path
+    elif dep.startswith('@/'):
+        # @ alias (commonly points to src directory)
+        rel_dep = dep[2:]  # Remove @/
+        # Assume @ points to src directory
+        src_path = os.path.join('src', rel_dep)
+        full_path = os.path.normpath(src_path)
 
         # Try different extensions if no extension provided
         if '.' not in os.path.basename(full_path):
