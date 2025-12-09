@@ -227,16 +227,26 @@ def build_graph(files, root_path):
     nodes = []
     edges = []
 
-    # Create nodes
-    for file_path in files:
+    # Sort files by relative path for better layout grouping
+    sorted_files = sorted(files, key=lambda f: os.path.relpath(f, root_path))
+
+    # Create nodes with calculated positions
+    for index, file_path in enumerate(sorted_files):
         rel_path = os.path.relpath(file_path, root_path)
         file_ext = os.path.splitext(file_path)[1].lower()
+
+        # Calculate position with sufficient spacing (6 per row, larger gaps)
+        row = index // 6
+        col = index % 6
+        x = col * 280  # Increased horizontal spacing
+        y = row * 180  # Increased vertical spacing
 
         node = {
             'id': rel_path,
             'label': os.path.basename(file_path),
             'type': file_ext,
-            'path': rel_path
+            'path': rel_path,
+            'position': {'x': x, 'y': y}
         }
         nodes.append(node)
 
