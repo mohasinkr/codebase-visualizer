@@ -8,10 +8,40 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedNode, setSelectedNode] = useState(null)
+  const [selectedNodeData, setSelectedNodeData] = useState(null)
   const [highlightedNodes, setHighlightedNodes] = useState(new Set())
+  const [progress, setProgress] = useState({ status: 'idle', message: '', percentage: 0 })
+  const [sseConnected, setSseConnected] = useState(false)
 
+  // Listen for progress updates via SSE
   useEffect(() => {
-    fetch('/api/graph')
+    const eventSource = new EventSource('/progress')
+
+    eventSource.onopen = () => {
+      console.log('SSE connection established')
+      setSseConnected(true)
+    }
+
+    eventSource.onmessage = (event) => {
+      const data = JSON.parse(event.data)
+      setProgress(data)
+      console.log('Progress update:', data)
+    }
+
+    eventSource.onerror = (error) => {
+      console.error('SSE connection error:', error)
+    }
+
+    return () => {
+      eventSource.close()
+    }
+  }, [])
+
+  // Fetch graph data only after SSE is connected
+  useEffect(() => {
+    if (!sseConnected) return
+
+    fetch('/graph.json')
       .then(response => {
         if (!response.ok) {
           throw new Error('Failed to fetch graph data')
@@ -42,7 +72,7 @@ function App() {
         setError(err.message)
         setLoading(false)
       })
-  }, [])
+  }, [sseConnected])
 
 
 
@@ -60,9 +90,11 @@ function App() {
     if (selectedNode === node.id) {
       // Deselect if clicking the same node
       setSelectedNode(null)
+      setSelectedNodeData(null)
       setHighlightedNodes(new Set())
     } else {
       setSelectedNode(node.id)
+      setSelectedNodeData(node.data)
       // Find all connected nodes
       const connected = new Set([node.id])
       graphData.edges.forEach(edge => {
@@ -78,7 +110,28 @@ function App() {
   }, [selectedNode, graphData.edges])
 
   if (loading) {
-    return <div className="loading">Loading codebase visualization...</div>
+    return (
+      <div className="loading-screen">
+        <h1>Codebase Visualizer</h1>
+        <p>Loading codebase visualization...</p>
+        {progress.status !== 'idle' && progress.status !== 'complete' && (
+          <div className="progress-info">
+            <div className="progress-bar">
+              <div
+                className="progress-fill"
+                style={{ width: `${progress.percentage}%` }}
+              ></div>
+            </div>
+            <p>{progress.message}</p>
+          </div>
+        )}
+        {progress.status === 'complete' && (
+          <div className="progress-complete">
+            ✓ {progress.message}
+          </div>
+        )}
+      </div>
+    )
   }
 
   if (error) {
@@ -86,10 +139,26 @@ function App() {
   }
 
   return (
-    <div style={{ width: '100vw', height: '100vh' }}>
+    <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
       <div className="header">
         <h1>Codebase Visualizer</h1>
         <p>Nodes: {graphData.nodes.length} | Edges: {graphData.edges.length}</p>
+        {progress.status !== 'idle' && progress.status !== 'complete' && (
+          <div className="progress-info">
+            <div className="progress-bar">
+              <div
+                className="progress-fill"
+                style={{ width: `${progress.percentage}%` }}
+              ></div>
+            </div>
+            <p>{progress.message}</p>
+          </div>
+        )}
+        {progress.status === 'complete' && (
+          <div className="progress-complete">
+            ✓ {progress.message}
+          </div>
+        )}
       </div>
       <ReactFlow
         nodes={graphData.nodes.map(node => ({
@@ -105,10 +174,33 @@ function App() {
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
         fitView
+        minZoom={0.01}
+        maxZoom={2}
+        style={{ width: selectedNodeData ? 'calc(100vw - 300px)' : '100vw' }}
       >
         <Controls />
         <Background />
       </ReactFlow>
+
+      {selectedNodeData && (
+        <div className="node-details-panel">
+          <h3>File Details</h3>
+          <div className="detail-item">
+            <strong>Name:</strong> {selectedNodeData.label}
+          </div>
+          <div className="detail-item">
+            <strong>Path:</strong> {selectedNodeData.path}
+          </div>
+          <div className="detail-item">
+            <strong>Type:</strong> {selectedNodeData.type}
+          </div>
+          <div className="detail-item">
+            <strong>Connections:</strong> {graphData.edges.filter(edge =>
+              edge.source === selectedNode || edge.target === selectedNode
+            ).length}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

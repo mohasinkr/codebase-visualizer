@@ -7,11 +7,19 @@ import re
 import webbrowser
 import threading
 import time
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, send_from_directory, Response
 from flask_cors import CORS
+from queue import Queue
 
 app = Flask(__name__, static_folder='frontend/dist', static_url_path='')
 CORS(app)
+
+# Store the initial path for graph generation
+INITIAL_PATH = None
+
+# Global progress tracking
+progress_clients = []
+current_progress = {'status': 'idle', 'message': '', 'percentage': 0}
 
 def load_gitignore_patterns(path):
     """Load patterns from .gitignore file."""
@@ -29,12 +37,15 @@ def load_gitignore_patterns(path):
     return patterns
 
 def scan_directory(path, ignore_patterns=None):
-    """Scan directory for files, excluding ignored patterns."""
+    """Scan directory for files, excluding ignored patterns and filtering by allowed extensions."""
     if ignore_patterns is None:
         # Default patterns plus from .gitignore
-        default_patterns = ['.git', 'node_modules', '__pycache__', '.vscode', 'dist', 'build', '.husky', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.npmrc', '.yarnrc', '.prettierrc', '.eslintrc', 'prettier.config.js', 'eslint.config.js', '.prettierignore']
+        default_patterns = ['.git', 'node_modules', '__pycache__', '.vscode', 'dist', 'build', '.husky', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.npmrc', '.yarnrc', '.prettierrc', '.eslintrc', 'prettier.config.js', 'eslint.config.js', '.prettierignore', '.editorconfig']
         gitignore_patterns = load_gitignore_patterns(path)
         ignore_patterns = default_patterns + gitignore_patterns
+
+    # Only allow these file extensions
+    allowed_extensions = ['.js', '.json', '.jsx', '.tsx', '.jpg', '.ts', '.py', '.c']
 
     files = []
     for root, dirs, files_list in os.walk(path):
@@ -42,9 +53,15 @@ def scan_directory(path, ignore_patterns=None):
         dirs[:] = [d for d in dirs if not any(d == pattern or d.startswith(pattern + '/') for pattern in ignore_patterns)]
 
         for file in files_list:
+            # Skip files starting with .
+            if file.startswith('.'):
+                continue
+            # Only include files with allowed extensions
+            if not any(file.endswith(ext) for ext in allowed_extensions):
+                continue
             if not any(pattern in os.path.join(root, file) for pattern in ignore_patterns):
                 full_path = os.path.join(root, file)
-                # Skip binary files or very large files
+                # Skip binary files or very large files (except for small images)
                 if os.path.getsize(full_path) < 1024 * 1024:  # 1MB limit
                     files.append(full_path)
 
@@ -222,10 +239,26 @@ def parse_js_dependencies(file_path):
 
     return dependencies
 
+def update_progress(status, message, percentage=0):
+    """Update global progress and notify all SSE clients."""
+    global current_progress
+    current_progress = {'status': status, 'message': message, 'percentage': percentage}
+
+    # Send update to all SSE clients
+    for client in progress_clients[:]:  # Copy list to avoid modification during iteration
+        try:
+            client.put(f"data: {json.dumps(current_progress)}\n\n")
+        except:
+            # Remove disconnected clients
+            if client in progress_clients:
+                progress_clients.remove(client)
+
 def build_graph(files, root_path):
     """Build graph data by searching for file references across all files."""
     nodes = []
     edges = []
+
+    update_progress('scanning', 'Scanning directory for files...', 10)
 
     # Sort files by relative path for better layout grouping
     sorted_files = sorted(files, key=lambda f: os.path.relpath(f, root_path))
@@ -250,6 +283,8 @@ def build_graph(files, root_path):
         }
         nodes.append(node)
 
+    update_progress('reading', 'Reading file contents...', 30)
+
     # Read all file contents
     file_contents = {}
     for file_path in files:
@@ -260,8 +295,15 @@ def build_graph(files, root_path):
             # Skip binary files or encoding errors
             file_contents[file_path] = ''
 
+    update_progress('analyzing', 'Analyzing file relationships...', 50)
+
     # For each target file, search all source files for references
-    for target_path in files:
+    total_files = len(files)
+    for i, target_path in enumerate(files):
+        if i % 5 == 0:  # Progress every 5 files for more frequent updates
+            progress_pct = 50 + int((i / total_files) * 40)  # 50-90% range
+            update_progress('analyzing', f'Processing file {i+1}/{total_files}: {os.path.basename(target_path)}', progress_pct)
+
         target_rel = os.path.relpath(target_path, root_path)
         target_name = os.path.basename(target_path)
         target_path_no_ext = target_rel.rsplit('.', 1)[0] if '.' in target_rel else target_rel
@@ -283,12 +325,31 @@ def build_graph(files, root_path):
                 source_rel = os.path.relpath(source_path, root_path)
                 content = file_contents[source_path]
 
+                # Also compute relative path from source to target
+                source_dir = os.path.dirname(source_path)
+                try:
+                    rel_import = os.path.relpath(target_path, source_dir)
+                    # Normalize to use forward slashes
+                    rel_import = rel_import.replace(os.sep, '/')
+                    # For same directory, make it ./filename
+                    if not rel_import.startswith('.'):
+                        rel_import = './' + rel_import
+                    search_terms.append(rel_import)
+                    # Also add without extension
+                    rel_import_no_ext = rel_import.rsplit('.', 1)[0] if '.' in rel_import else rel_import
+                    search_terms.append(rel_import_no_ext)
+                except ValueError:
+                    # Paths on different drives, skip
+                    pass
+
                 # Check if any reference to the target file appears in source content
                 if any(term in content for term in search_terms):
                     edges.append({
                         'from': source_rel,
                         'to': target_rel
                     })
+
+    update_progress('complete', f'Analysis complete! Found {len(nodes)} files and {len(edges)} connections.', 100)
 
     return {'nodes': nodes, 'edges': edges}
 
@@ -347,6 +408,11 @@ def get_graph():
 
     print(f"Generated graph with {len(graph['nodes'])} nodes and {len(graph['edges'])} edges")
 
+    # Save graph data to JSON file
+    with open('graph.json', 'w') as f:
+        json.dump(graph, f, indent=2)
+    print("Graph data saved to graph.json")
+
     return jsonify(graph)
 
 @app.route('/')
@@ -357,12 +423,64 @@ def index():
 def static_files(path):
     return send_from_directory('frontend/dist', path)
 
+@app.route('/graph.json')
+def serve_graph_json():
+    """Serve the generated graph JSON file, regenerating if needed."""
+    # Regenerate graph for the specified directory
+    abs_path = os.path.abspath(INITIAL_PATH)
+
+    if not os.path.exists(abs_path):
+        return jsonify({'error': 'Directory not found'}), 404
+
+    files = scan_directory(abs_path)
+    graph = build_graph(files, abs_path)
+
+    # Save updated graph data
+    with open('graph.json', 'w') as f:
+        json.dump(graph, f, indent=2)
+
+    try:
+        return send_from_directory('.', 'graph.json', mimetype='application/json')
+    except FileNotFoundError:
+        return jsonify({'error': 'Graph generation failed'}), 500
+
+@app.route('/progress')
+def progress():
+    """Server-Sent Events endpoint for progress updates."""
+    def generate():
+        q = Queue()
+        progress_clients.append(q)
+
+        try:
+            # Send current progress immediately
+            yield f"data: {json.dumps(current_progress)}\n\n"
+
+            # Keep connection alive and send updates
+            while True:
+                try:
+                    message = q.get(timeout=30)  # 30 second timeout
+                    yield message
+                except:
+                    # Send keepalive
+                    yield f"data: {json.dumps({'status': 'keepalive'})}\n\n"
+        except GeneratorExit:
+            # Client disconnected
+            if q in progress_clients:
+                progress_clients.remove(q)
+
+    return Response(generate(), mimetype='text/event-stream')
+
 def open_browser():
     time.sleep(1)  # Wait for server to start
     webbrowser.open('http://localhost:5000')
 
 if __name__ == '__main__':
     print("Starting Codebase Visualizer...")
+
+    # Set the initial path for graph generation
+    INITIAL_PATH = sys.argv[1] if len(sys.argv) > 1 else '.'
+
+    print(f"Configured to analyze path: {INITIAL_PATH}")
     print("Open http://localhost:5000 in your browser")
 
     # Open browser in a separate thread
