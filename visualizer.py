@@ -32,7 +32,7 @@ def scan_directory(path, ignore_patterns=None):
     """Scan directory for files, excluding ignored patterns."""
     if ignore_patterns is None:
         # Default patterns plus from .gitignore
-        default_patterns = ['.git', 'node_modules', '__pycache__', '.vscode', 'dist', 'build']
+        default_patterns = ['.git', 'node_modules', '__pycache__', '.vscode', 'dist', 'build', '.husky', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '.npmrc', '.yarnrc', '.prettierrc', '.eslintrc', 'prettier.config.js', 'eslint.config.js', '.prettierignore']
         gitignore_patterns = load_gitignore_patterns(path)
         ignore_patterns = default_patterns + gitignore_patterns
 
@@ -204,7 +204,8 @@ def parse_js_dependencies(file_path):
             import_patterns = [
                 r'import\s+.*?\s+from\s+[\'"]([^\'"]+)[\'"]',
                 r'import\s+[\'"]([^\'"]+)[\'"]',
-                r'require\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)'
+                r'require\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)',
+                r'import\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)'  # Dynamic imports
             ]
 
             for pattern in import_patterns:
@@ -253,14 +254,21 @@ def build_graph(files, root_path):
     for target_path in files:
         target_rel = os.path.relpath(target_path, root_path)
         target_name = os.path.basename(target_path)
+        target_path_no_ext = target_rel.rsplit('.', 1)[0] if '.' in target_rel else target_rel
+
+        # Also include dotted versions for Python-style imports
+        target_rel_dotted = target_rel.replace('/', '.')
+        target_path_no_ext_dotted = target_path_no_ext.replace('/', '.')
+
+        search_terms = [target_name, target_rel, target_path_no_ext, target_rel_dotted, target_path_no_ext_dotted]
 
         for source_path in files:
             if source_path != target_path:
                 source_rel = os.path.relpath(source_path, root_path)
                 content = file_contents[source_path]
 
-                # Check if target file name appears in source content
-                if target_name in content:
+                # Check if any reference to the target file appears in source content
+                if any(term in content for term in search_terms):
                     edges.append({
                         'from': source_rel,
                         'to': target_rel
@@ -304,6 +312,8 @@ def get_graph():
 
     files = scan_directory(abs_path)
     graph = build_graph(files, abs_path)
+
+    print(f"Generated graph with {len(graph['nodes'])} nodes and {len(graph['edges'])} edges")
 
     return jsonify(graph)
 

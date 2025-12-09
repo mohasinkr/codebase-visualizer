@@ -20,7 +20,7 @@ function App() {
         // Convert to React Flow format
         const nodes = data.nodes.map((node, index) => ({
           id: node.id,
-          position: { x: (index % 10) * 150, y: Math.floor(index / 10) * 100 }, // Simple grid layout
+          position: { x: (index % 10) * 150, y: Math.floor(index / 10) * 100 },
           data: { label: node.label, type: node.type, path: node.path },
           type: 'default'
         }))
