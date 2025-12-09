@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import ReactFlow, { Controls, Background, applyNodeChanges, applyEdgeChanges } from 'reactflow'
+import { forceSimulation, forceManyBody, forceCenter, forceLink } from 'd3-force'
 import 'reactflow/dist/style.css'
 import './App.css'
 
@@ -19,23 +20,50 @@ function App() {
         return response.json()
       })
       .then(data => {
-        // Convert to React Flow format (positions calculated in backend)
-        const nodes = data.nodes.map((node) => ({
+        // Convert to d3-force compatible format
+        const nodes = data?.nodes?.map((node, index) => ({
           id: node.id,
-          position: node.position,
           data: { label: node.label, type: node.type, path: node.path },
           type: 'default',
-          style: {}
+          index: index
         }))
 
-        const edges = data.edges.map((edge, index) => ({
+        // Create id to index mapping
+        const idToIndex = new Map(data?.nodes?.map((node, index) => [node.id, index]))
+
+        const links = data.edges.map((edge) => ({
+          source: idToIndex.get(edge.from),
+          target: idToIndex.get(edge.to)
+        }))
+
+        // Apply force-directed layout
+        const simulation = forceSimulation(nodes)
+          .force('charge', forceManyBody().strength(-800))
+          .force('center', forceCenter(1000, 800))
+          .force('link', forceLink(links).distance(150).id(d => d.id))
+          .stop()
+
+        // Run simulation
+        for (let i = 0; i < 300; i++) {
+          simulation.tick()
+        }
+
+        // Convert back to React Flow format with calculated positions
+        const reactFlowNodes = nodes.map((node) => ({
+          id: node.id,
+          position: { x: node.x || 0, y: node.y || 0 },
+          data: node.data,
+          type: 'default'
+        }))
+
+        const reactFlowEdges = data.edges.map((edge, index) => ({
           id: `e${index}`,
           source: edge.from,
           target: edge.to,
           type: 'default'
         }))
 
-        setGraphData({ nodes, edges })
+        setGraphData({ nodes: reactFlowNodes, edges: reactFlowEdges })
         setLoading(false)
       })
       .catch(err => {
