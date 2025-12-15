@@ -351,7 +351,17 @@ def build_graph(files, root_path):
 
     update_progress('complete', f'Analysis complete! Found {len(nodes)} files and {len(edges)} connections.', 100)
 
-    return {'nodes': nodes, 'edges': edges}
+    return {
+        'metadata': {
+            'project_path': root_path,
+            'project_name': os.path.basename(os.path.abspath(root_path)),
+            'generated_at': time.time(),
+            'file_count': len(nodes),
+            'connection_count': len(edges)
+        },
+        'nodes': nodes,
+        'edges': edges
+    }
 
 def resolve_dependency(dep, current_file, file_map):
     """Resolve a dependency path to an actual file in the map."""
@@ -408,10 +418,11 @@ def get_graph():
 
     print(f"Generated graph with {len(graph['nodes'])} nodes and {len(graph['edges'])} edges")
 
-    # Save graph data to JSON file
-    with open('graph.json', 'w') as f:
+    # Save graph data to JSON file in frontend public directory
+    graph_path = 'frontend/dist/graph.json'
+    with open(graph_path, 'w') as f:
         json.dump(graph, f, indent=2)
-    print("Graph data saved to graph.json")
+    print(f"Graph data saved to {graph_path}")
 
     return jsonify(graph)
 
@@ -443,6 +454,75 @@ def serve_graph_json():
         return send_from_directory('.', 'graph.json', mimetype='application/json')
     except FileNotFoundError:
         return jsonify({'error': 'Graph generation failed'}), 500
+
+@app.route('/api/reindex')
+def reindex_codebase():
+    """Force regeneration of the graph for the current project."""
+    graph_path = 'frontend/dist/graph.json'
+
+    if not os.path.exists(graph_path):
+        return jsonify({'error': 'No existing graph to reindex'}), 404
+
+    # Load existing metadata to get the path
+    try:
+        with open(graph_path, 'r') as f:
+            existing_data = json.load(f)
+            project_path = existing_data.get('metadata', {}).get('project_path', '.')
+    except:
+        return jsonify({'error': 'Could not read existing graph'}), 500
+
+    abs_path = os.path.abspath(project_path)
+
+    if not os.path.exists(abs_path):
+        return jsonify({'error': 'Project directory no longer exists'}), 404
+
+    files = scan_directory(abs_path)
+    graph = build_graph(files, abs_path)
+
+    # Save updated graph data
+    with open(graph_path, 'w') as f:
+        json.dump(graph, f, indent=2)
+
+    return jsonify({'status': 'reindexed', 'nodes': len(graph['nodes']), 'edges': len(graph['edges'])})
+
+@app.route('/api/open-in-vscode/<path:file_path>')
+def open_in_vscode(file_path):
+    """Open a file in VS Code editor."""
+    try:
+        # Get the project path from the graph.json file (same one the frontend uses)
+        graph_path = 'graph.json'
+        if os.path.exists(graph_path):
+            with open(graph_path, 'r') as f:
+                existing_data = json.load(f)
+                project_path = existing_data.get('metadata', {}).get('project_path', '.')
+        else:
+            # Fallback to INITIAL_PATH if graph.json doesn't exist
+            global INITIAL_PATH
+            project_path = INITIAL_PATH if INITIAL_PATH else '.'
+
+        abs_project_path = os.path.abspath(project_path)
+        abs_file_path = os.path.join(abs_project_path, file_path)
+
+        # Verify the file exists and is within the project directory
+        if not os.path.exists(abs_file_path):
+            return jsonify({'error': f'File not found: {abs_file_path}'}), 404
+
+        # Ensure the file is within the project directory for security
+        if not os.path.abspath(abs_file_path).startswith(os.path.abspath(abs_project_path)):
+            return jsonify({'error': 'Access denied'}), 403
+
+        # Open the file in VS Code
+        import subprocess
+        result = subprocess.run(['code', abs_file_path], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"VS Code command failed: {result.stderr}")
+            return jsonify({'error': f'Failed to open in VS Code: {result.stderr}'}), 500
+
+        return jsonify({'status': 'opened', 'file': file_path, 'project_path': project_path})
+
+    except Exception as e:
+        print(f"Error opening file in VS Code: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/progress')
 def progress():

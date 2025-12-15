@@ -12,6 +12,8 @@ function App() {
   const [highlightedNodes, setHighlightedNodes] = useState(new Set())
   const [progress, setProgress] = useState({ status: 'idle', message: '', percentage: 0 })
   const [sseConnected, setSseConnected] = useState(false)
+  const [projectMetadata, setProjectMetadata] = useState(null)
+  const [selectedPath, setSelectedPath] = useState('')
 
   // Listen for progress updates via SSE
   useEffect(() => {
@@ -37,39 +39,47 @@ function App() {
     }
   }, [])
 
-  // Fetch graph data only after SSE is connected
+  // Check for existing graph or show path selection
   useEffect(() => {
     if (!sseConnected) return
 
     fetch('/graph.json')
       .then(response => {
-        if (!response.ok) {
-          throw new Error('Failed to fetch graph data')
+        if (response.ok) {
+          return response.json()
+        } else {
+          // No existing graph, show path selection
+          setLoading(false)
+          return null
         }
-        return response.json()
       })
       .then(data => {
-        // Convert to React Flow format (positions calculated in backend)
-        const nodes = data.nodes.map((node) => ({
-          id: node.id,
-          position: node.position,
-          data: { label: node.label, type: node.type, path: node.path },
-          type: 'default',
-          style: {}
-        }))
+        if (data) {
+          // Existing graph found
+          setProjectMetadata(data.metadata)
 
-        const edges = data.edges.map((edge, index) => ({
-          id: `e${index}`,
-          source: edge.from,
-          target: edge.to,
-          type: 'default'
-        }))
+          // Convert to React Flow format (positions calculated in backend)
+          const nodes = data.nodes.map((node) => ({
+            id: node.id,
+            position: node.position,
+            data: { label: node.label, type: node.type, path: node.path },
+            type: 'default',
+            style: {}
+          }))
 
-        setGraphData({ nodes, edges })
-        setLoading(false)
+          const edges = data.edges.map((edge, index) => ({
+            id: `e${index}`,
+            source: edge.from,
+            target: edge.to,
+            type: 'default'
+          }))
+
+          setGraphData({ nodes, edges })
+          setLoading(false)
+        }
       })
       .catch(err => {
-        setError(err.message)
+        // No graph exists, show path selection
         setLoading(false)
       })
   }, [sseConnected])
@@ -138,11 +148,127 @@ function App() {
     return <div className="error">Error: {error}</div>
   }
 
+  // Show path selection if no graph data loaded
+  if (!graphData.nodes.length && !loading) {
+    return (
+      <div className="path-selection">
+        <h1>Codebase Visualizer</h1>
+        <p>Enter the path to the codebase you want to analyze:</p>
+        <div className="path-input-container">
+          <input
+            type="text"
+            value={selectedPath}
+            onChange={(e) => setSelectedPath(e.target.value)}
+            placeholder="/path/to/your/project"
+            className="path-input"
+          />
+          <button
+            onClick={() => {
+              if (selectedPath.trim()) {
+                setLoading(true)
+                // Trigger analysis with selected path
+                fetch(`/api/analyze?path=${encodeURIComponent(selectedPath)}`)
+                  .then(() => {
+                    // After triggering analysis, fetch the graph
+                    return fetch('/graph.json')
+                  })
+                  .then(response => response.json())
+                  .then(data => {
+                    setProjectMetadata(data.metadata)
+                    const nodes = data.nodes.map((node) => ({
+                      id: node.id,
+                      position: node.position,
+                      data: { label: node.label, type: node.type, path: node.path },
+                      type: 'default',
+                      style: {}
+                    }))
+                    const edges = data.edges.map((edge, index) => ({
+                      id: `e${index}`,
+                      source: edge.from,
+                      target: edge.to,
+                      type: 'default'
+                    }))
+                    setGraphData({ nodes, edges })
+                    setLoading(false)
+                  })
+                  .catch(err => {
+                    setError(err.message)
+                    setLoading(false)
+                  })
+              }
+            }}
+            disabled={!selectedPath.trim()}
+            className="analyze-button"
+          >
+            Analyze Codebase
+          </button>
+        </div>
+        <div className="instructions">
+          <h3>How it works:</h3>
+          <ul>
+            <li>Scans for JavaScript, TypeScript, Python, and other source files</li>
+            <li>Analyzes import relationships and dependencies</li>
+            <li>Creates an interactive graph visualization</li>
+            <li>Supports absolute imports (@/path) and relative imports</li>
+          </ul>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative' }}>
       <div className="header">
-        <h1>Codebase Visualizer</h1>
-        <p>Nodes: {graphData.nodes.length} | Edges: {graphData.edges.length}</p>
+        <div className="header-content">
+          <div>
+            <h1>Codebase Visualizer</h1>
+            {projectMetadata && (
+              <p className="project-info">
+                Project: <strong>{projectMetadata.project_name}</strong> |
+                Generated: {new Date(projectMetadata.generated_at * 1000).toLocaleString()} |
+                Nodes: {graphData.nodes.length} | Edges: {graphData.edges.length}
+              </p>
+            )}
+            {!projectMetadata && (
+              <p>Nodes: {graphData.nodes.length} | Edges: {graphData.edges.length}</p>
+            )}
+          </div>
+          {projectMetadata && (
+            <button
+              onClick={() => {
+                setLoading(true)
+                fetch('/api/reindex')
+                  .then(() => fetch('/graph.json'))
+                  .then(response => response.json())
+                  .then(data => {
+                    setProjectMetadata(data.metadata)
+                    const nodes = data.nodes.map((node) => ({
+                      id: node.id,
+                      position: node.position,
+                      data: { label: node.label, type: node.type, path: node.path },
+                      type: 'default',
+                      style: {}
+                    }))
+                    const edges = data.edges.map((edge, index) => ({
+                      id: `e${index}`,
+                      source: edge.from,
+                      target: edge.to,
+                      type: 'default'
+                    }))
+                    setGraphData({ nodes, edges })
+                    setLoading(false)
+                  })
+                  .catch(err => {
+                    setError(err.message)
+                    setLoading(false)
+                  })
+              }}
+              className="reindex-button"
+            >
+              Reindex Project
+            </button>
+          )}
+        </div>
         {progress.status !== 'idle' && progress.status !== 'complete' && (
           <div className="progress-info">
             <div className="progress-bar">
@@ -199,6 +325,25 @@ function App() {
               edge.source === selectedNode || edge.target === selectedNode
             ).length}
           </div>
+          <button
+            onClick={() => {
+              fetch(`/api/open-in-vscode/${encodeURIComponent(selectedNodeData.path)}`)
+                .then(response => response.json())
+                .then(data => {
+                  if (data.status === 'opened') {
+                    console.log(`Opened ${data.file} in VS Code`);
+                  } else {
+                    console.error('Error opening file:', data.error);
+                  }
+                })
+                .catch(err => {
+                  console.error('Error opening file in VS Code:', err);
+                });
+            }}
+            className="open-vscode-button"
+          >
+            Open in VS Code
+          </button>
         </div>
       )}
     </div>
